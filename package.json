@@ -1,0 +1,59 @@
+{
+  "name": "konfigo-sdk",
+  "version": "0.1.0",
+  "description": "Official JavaScript/TypeScript SDK for Konfigo feature flags and remote config.",
+  "license": "MIT",
+  "author": "Gabor Magyar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magyargdev/konfigo-sdk.git"
+  },
+  "homepage": "https://github.com/magyargdev/konfigo-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/magyargdev/konfigo-sdk/issues"
+  },
+  "keywords": [
+    "konfigo",
+    "feature-flags",
+    "remote-config",
+    "sdk"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsup": "^8",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}
