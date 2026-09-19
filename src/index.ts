@@ -10,6 +10,8 @@ export interface KonfigoOptions {
   baseUrl: string;
   /** Request timeout in ms. Default 10000. */
   timeoutMs?: number;
+  /** Only load flags (for keys created as "Flags only"); `config` stays empty. */
+  flagsOnly?: boolean;
   /** Custom fetch implementation (defaults to global `fetch`). */
   fetch?: typeof fetch;
 }
@@ -18,6 +20,44 @@ export interface Snapshot {
   env: Environment;
   flags: Flags;
   config: Config;
+}
+
+const ENVIRONMENTS: readonly string[] = ["development", "staging", "production"];
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Rejects plain-http hosts (the API key would travel in clear text), except loopback for local development. */
+function checkBaseUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("Konfigo: `baseUrl` is not a valid URL");
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname))) {
+    throw new Error("Konfigo: `baseUrl` must use https:// (http:// is only allowed for localhost)");
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Copies a server map into a prototype-less object, keeping only values of the expected type. */
+function sanitize<T>(what: string, v: unknown, ok: (x: unknown) => x is T): Record<string, T> {
+  if (!isRecord(v)) throw new KonfigoError(`Unexpected response: \`${what}\` is not an object`);
+  const out = Object.create(null) as Record<string, T>;
+  for (const [k, x] of Object.entries(v)) {
+    if (!ok(x)) throw new KonfigoError(`Unexpected response: \`${what}.${k}\` has an invalid type`);
+    out[k] = x;
+  }
+  return out;
+}
+
+const isBool = (x: unknown): x is boolean => typeof x === "boolean";
+const isValue = (x: unknown): x is ConfigValue => typeof x === "string" || (typeof x === "number" && Number.isFinite(x));
+
+function parseEnv(v: unknown): Environment {
+  if (typeof v !== "string" || !ENVIRONMENTS.includes(v)) throw new KonfigoError("Unexpected response: invalid `env`");
+  return v as Environment;
 }
 
 export class KonfigoError extends Error {
@@ -37,6 +77,7 @@ export class Konfigo {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly flagsOnly: boolean;
   private readonly fetchImpl: typeof fetch;
   private snapshot: Snapshot | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -46,8 +87,9 @@ export class Konfigo {
     if (!options.apiKey) throw new Error("Konfigo: `apiKey` is required");
     if (!options.baseUrl) throw new Error("Konfigo: `baseUrl` is required");
     this.apiKey = options.apiKey;
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.baseUrl = checkBaseUrl(options.baseUrl);
     this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.flagsOnly = options.flagsOnly ?? false;
     const f = options.fetch ?? globalThis.fetch;
     if (!f) throw new Error("Konfigo: no global `fetch` found; pass `options.fetch`");
     this.fetchImpl = f.bind(globalThis);
@@ -55,21 +97,26 @@ export class Konfigo {
 
   /** Fetches all flags for this key's environment (no caching). */
   async fetchFlags(): Promise<Flags> {
-    return (await this.request<{ flags: Flags }>("/api/v1/flags")).flags;
+    return sanitize("flags", (await this.request<{ flags: unknown }>("/api/v1/flags")).flags, isBool);
   }
 
   /** Fetches all config values for this key's environment (no caching). */
   async fetchConfig(): Promise<Config> {
-    return (await this.request<{ config: Config }>("/api/v1/config")).config;
+    return sanitize("config", (await this.request<{ config: unknown }>("/api/v1/config")).config, isValue);
   }
 
   /** Loads flags and config into the local cache. Throws on failure; the previous snapshot is kept. */
   async refresh(): Promise<Snapshot> {
     const [f, c] = await Promise.all([
-      this.request<{ env: Environment; flags: Flags }>("/api/v1/flags"),
-      this.request<{ env: Environment; config: Config }>("/api/v1/config"),
+      this.request<{ env: unknown; flags: unknown }>("/api/v1/flags"),
+      this.flagsOnly ? null : this.request<{ env: unknown; config: unknown }>("/api/v1/config"),
     ]);
-    this.snapshot = { env: c.env, flags: f.flags, config: c.config };
+    // Validate everything before touching the cache so a bad response can't leave a half-updated snapshot.
+    this.snapshot = {
+      env: parseEnv(f.env),
+      flags: sanitize("flags", f.flags, isBool),
+      config: c ? sanitize("config", c.config, isValue) : (Object.create(null) as Config),
+    };
     for (const l of this.listeners) l(this.snapshot);
     return this.snapshot;
   }
@@ -135,6 +182,10 @@ export class Konfigo {
       const retry = Number(res.headers.get("retry-after"));
       throw new KonfigoError(body?.error ?? `HTTP ${res.status}`, res.status, retry > 0 ? retry : undefined);
     }
-    return (await res.json()) as T;
+    const body: unknown = await res.json().catch(() => {
+      throw new KonfigoError("Unexpected response: body is not valid JSON", res.status);
+    });
+    if (!isRecord(body)) throw new KonfigoError("Unexpected response: body is not an object", res.status);
+    return body as T;
   }
 }

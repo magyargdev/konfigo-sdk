@@ -41,4 +41,6 @@ Without background polling: `await konfigo.refresh()` when you want, or call `fe
 Failed background refreshes keep the last good values. Errors are `KonfigoError` with `status` and (on 429) `retryAfter` seconds.
 The API allows 120 requests/min per key; the default polling uses 4.
 
+Keys created as "Flags only" can be used in client-side code; pass `flagsOnly: true` so the SDK skips the config endpoint. `baseUrl` must be `https://` (plain `http://` is only accepted for `localhost`), and responses are type-checked before they reach your cache.
+
 Don't ship a server API key to the browser — it grants read access to all values in that environment.

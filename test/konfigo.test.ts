@@ -56,3 +56,46 @@ test("start polls and onChange fires", async () => {
   k.stop();
   assert.ok(n >= 3, `expected >=3 refreshes, got ${n}`);
 });
+
+test("baseUrl must be https, except for loopback", () => {
+  const f = ok();
+  assert.throws(() => new Konfigo({ apiKey: "kfg_test", baseUrl: "http://x.test", fetch: f }), /https/);
+  assert.throws(() => new Konfigo({ apiKey: "kfg_test", baseUrl: "not a url", fetch: f }), /valid URL/);
+  assert.doesNotThrow(() => new Konfigo({ apiKey: "kfg_test", baseUrl: "http://localhost:3000", fetch: f }));
+  assert.doesNotThrow(() => new Konfigo({ apiKey: "kfg_test", baseUrl: "https://x.test", fetch: f }));
+});
+
+test("malformed responses are rejected and keep the previous snapshot", async () => {
+  let flags: unknown = { a: true };
+  const f = mock({
+    "/api/v1/flags": () => Response.json({ env: "production", flags }),
+    "/api/v1/config": () => Response.json({ env: "production", config: { t: 1 } }),
+  });
+  const k = new Konfigo({ apiKey: "kfg_test", baseUrl: "https://x.test", fetch: f });
+  await k.refresh();
+  for (const bad of [{ a: "yes" }, null, [true], "x"]) {
+    flags = bad;
+    await assert.rejects(k.refresh(), KonfigoError);
+    assert.equal(k.isEnabled("a"), true);
+  }
+});
+
+test("inherited object keys are not treated as flags or values", async () => {
+  const k = new Konfigo({ apiKey: "kfg_test", baseUrl: "https://x.test", fetch: ok() });
+  await k.refresh();
+  assert.equal(k.isEnabled("constructor"), false);
+  assert.equal(k.get("toString", "d"), "d");
+});
+
+test("flagsOnly never calls the config endpoint", async () => {
+  const seen: string[] = [];
+  const f = ((u: string) => {
+    seen.push(new URL(u).pathname);
+    return Promise.resolve(Response.json({ env: "production", flags: { a: true } }));
+  }) as unknown as typeof fetch;
+  const k = new Konfigo({ apiKey: "kfg_test", baseUrl: "https://x.test", flagsOnly: true, fetch: f });
+  await k.refresh();
+  assert.deepEqual(seen, ["/api/v1/flags"]);
+  assert.equal(k.isEnabled("a"), true);
+  assert.equal(k.get("x", 1), 1);
+});
